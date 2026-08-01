@@ -1,0 +1,68 @@
+name: PR Architecture Gate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  architecture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Repo Perspector
+        run: python -m pip install .
+
+      - name: Prepare baseline worktree
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git worktree add /tmp/repo-perspector-base "$BASE_SHA"
+
+      - name: Analyze baseline
+        run: repo-perspector analyze /tmp/repo-perspector-base --history-commits 300 --workers 4 --skip-generated -o baseline-report
+
+      - name: Analyze current branch
+        run: repo-perspector analyze . --history-commits 300 --workers 4 --skip-generated -o current-report
+
+      - name: Enforce only new architecture debt
+        run: |
+          repo-perspector check current-report \
+            --baseline baseline-report \
+            --new-only \
+            --fail-on warning \
+            --fail-on-risk-regression \
+            --fail-on-new-cycle
+
+      - name: Generate PR blast radius
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          repo-perspector change-impact current-report \
+            --repo . \
+            --base "$BASE_SHA" \
+            --head HEAD \
+            --baseline baseline-report \
+            -o change-impact
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: current-report/architecture.sarif
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: repository-architecture
+          path: |
+            baseline-report/
+            current-report/
+            change-impact/

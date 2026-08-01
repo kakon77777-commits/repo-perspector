@@ -1,0 +1,13 @@
+# Checksums — v0.6.0
+
+```text
+60741712bee37812f5b615bafb0226b7b037726064ed425661b0e0fa9e794ea7  dist/repo_perspector-0.6.0-py3-none-any.whl
+331211920fe500deb0a673374cad987994e2fa2cf59575a79279818e74c3f95d  pyproject.toml
+b0f289d6b7b07ebee96a76beda6349ed92a6bf5f8bed590f4a93ef00372000cb  README.md
+3cb0b8c108fdbb4684eb7725e937de31eabd6ef063c90eede67bf50f3e24947f  src/repo_perspector/health.py
+03c2792a6b31b61be3b7b5bbc16d41e996fc3b06627520d8944d17890fe760f3  src/repo_perspector/state.py
+918ef15df23093f9fc531f95a7f1ef31afedf4fcafda522b4c14359e61e9c0e7  src/repo_perspector/rule_packs.py
+eca16dde5787a199510762f73363e6448d403c8765ba143379eb6c69bc19d4dd  src/repo_perspector/indexer.py
+7e270543f5eccce77a012fe40c7c963043bbf2db6be35afe5686863d099033e5  self_report/architecture.json
+dd9d923c113277e3e20530bd09a96ebc91fea3045ef2463849821fe0f7e1a8e2  trend_demo/architecture-trend.json
+```

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "repo-perspector"
+version = "0.6.0"
+description = "Evidence-first repository architecture intelligence for monorepos, symbols, policies, SARIF, CI, and MCP"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "Neo K. / EveMissLab"}]
+license = {text = "MIT"}
+keywords = ["github", "architecture", "visualization", "dependency-graph", "static-analysis", "symbols", "sarif", "mcp", "monorepo", "workspace"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.27,<2"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+repo-perspector = "repo_perspector.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

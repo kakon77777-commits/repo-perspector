@@ -1,0 +1,39 @@
+version: 1
+
+layers:
+  - name: domain
+    match:
+      - "src/domain/**"
+    may_depend_on:
+      - domain
+
+  - name: application
+    match:
+      - "src/application/**"
+    may_depend_on:
+      - application
+      - domain
+
+  - name: infrastructure
+    match:
+      - "src/infrastructure/**"
+    may_depend_on:
+      - infrastructure
+      - application
+      - domain
+
+rules:
+  architecture.high_fanout:
+    severity: warning
+  architecture.hidden_change_coupling:
+    enabled: true
+    severity: note
+
+thresholds:
+  max_cycles: 0
+  max_critical_components: 0
+  max_high_components: 5
+  max_findings: 20
+  max_hotspots: 10
+  min_health: 80
+  max_health_drop: 5

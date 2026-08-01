@@ -1,0 +1,9 @@
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+.perspector-state/
+.perspector-cache/
+out-*/
+report/

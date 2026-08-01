@@ -1,0 +1,58 @@
+name: Repository Architecture Trend Gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  architecture:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 300
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Perspector
+        run: pip install .
+
+      - name: Analyze and record
+        run: |
+          repo-perspector analyze . \
+            -o architecture-report \
+            --rule-pack strict \
+            --history-commits 300 \
+            --skip-generated \
+            --state-dir architecture-state \
+            --record \
+            --label "${GITHUB_REF_NAME}-${GITHUB_SHA::12}"
+
+      - name: Architecture gate
+        run: |
+          repo-perspector check architecture-report \
+            --fail-on warning \
+            --min-health 80
+
+      - name: Render trend
+        run: repo-perspector trend architecture-state -o architecture-trend
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: architecture-report/architecture.sarif
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: repository-architecture
+          path: |
+            architecture-report/
+            architecture-state/
+            architecture-trend/

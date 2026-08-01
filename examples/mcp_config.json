@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "repo-perspector": {
+      "command": "repo-perspector",
+      "args": [
+        "mcp",
+        "/absolute/path/to/architecture-report",
+        "--transport",
+        "stdio"
+      ]
+    }
+  }
+}
