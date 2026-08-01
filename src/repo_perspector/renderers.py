@@ -140,6 +140,29 @@ def detect_declared_mssp(report: ArchitectureReport) -> dict[str, list]:
     return grouped
 
 
+
+def mssp_units(component) -> list[str]:
+    """The MSSP units inside one analysed component.
+
+    A component here is a directory of files, so TMS/reporters/text.js and
+    TMS/reporters/json.js collapse into a single component `TMS/reporters`. MSSP
+    counts them as two units — a directory with an index file, otherwise one
+    unit per file — and the sibling-import rule is stated at that granularity.
+
+    They are listed rather than split into separate entries because the metrics
+    (centrality, instability, hotspot) are measured per component; splitting
+    would copy one measurement onto units that were never measured separately.
+    """
+    files = [f for f in getattr(component, "files", []) or []]
+    if len(files) <= 1:
+        return []
+    stems = [f.replace("\\", "/").rsplit("/", 1)[-1] for f in files]
+    if any(stem.split(".")[0] == "index" for stem in stems):
+        return []          # a directory with an index file is one unit
+    base = component.path.replace("\\", "/")
+    return sorted(f"{base}/{stem.rsplit('.', 1)[0]}" for stem in stems)
+
+
 def render_mssp(report: ArchitectureReport) -> str:
     project = report.project
     pattern = report.architecture["pattern"]
@@ -199,6 +222,12 @@ def render_mssp(report: ArchitectureReport) -> str:
                     f"      role: {quote(component.role)}",
                     f"      stability: {quote(component.stability)}",
                     f"      centrality: {component.centrality}",
+                ])
+                units = mssp_units(component)
+                if units:
+                    lines.append("      units:")
+                    lines.extend(f"        - {quote(unit)}" for unit in units)
+                lines.extend([
                     "      dependencies:",
                 ])
                 if component.internal_dependencies:
@@ -219,8 +248,12 @@ def render_mssp(report: ArchitectureReport) -> str:
             f"      instability: {component.metrics.get('instability', 0.0)}",
             f"      hotspot_score: {component.metrics.get('hotspot_score', 0.0)}",
             f"      risk_tier: {quote(component.impact.get('risk_tier', 'unknown'))}",
-            "      dependencies:",
         ])
+        units = mssp_units(component)
+        if units:
+            lines.append("      units:")
+            lines.extend(f"        - {quote(unit)}" for unit in units)
+        lines.append("      dependencies:")
         lines.extend(f"        - {quote(dep)}" for dep in component.internal_dependencies) if component.internal_dependencies else lines.append("        []")
     lines.append("  TMS:")
     for component in optional:
@@ -230,8 +263,12 @@ def render_mssp(report: ArchitectureReport) -> str:
             "      optional: true",
             f"      stability: {quote(component.stability)}",
             f"      hotspot_score: {component.metrics.get('hotspot_score', 0.0)}",
-            "      dependencies:",
         ])
+        units = mssp_units(component)
+        if units:
+            lines.append("      units:")
+            lines.extend(f"        - {quote(unit)}" for unit in units)
+        lines.append("      dependencies:")
         lines.extend(f"        - {quote(dep)}" for dep in component.internal_dependencies) if component.internal_dependencies else lines.append("        []")
     if not optional:
         lines.append("    []")
