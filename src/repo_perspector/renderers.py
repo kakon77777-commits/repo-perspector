@@ -115,11 +115,49 @@ def render_findings(report: ArchitectureReport) -> str:
     return "\n".join(lines)
 
 
+MSSP_SETS = ("FMS", "SCL", "SMS", "TMS", "DMS")
+
+
+def detect_declared_mssp(report: ArchitectureReport) -> dict[str, list]:
+    """Group components by the MSSP set their own path declares.
+
+    A project that puts modules under src/SMS/ and src/TMS/ has already stated
+    where each capability belongs. Inferring that placement from centrality and
+    churn — and then printing the answer under MSSP's own labels — overrides the
+    author with a guess, and the guess is wrong in a predictable direction:
+    a declared TMS with high centrality gets reported as SMS.
+
+    Declaration wins where it exists. Inference is the fallback, and
+    render_mssp() records which one produced the output.
+    """
+    grouped: dict[str, list] = {name: [] for name in MSSP_SETS}
+    for component in report.components:
+        segments = component.path.replace("\\", "/").split("/")
+        for name in MSSP_SETS:
+            if name in segments:
+                grouped[name].append(component)
+                break
+    return grouped
+
+
 def render_mssp(report: ArchitectureReport) -> str:
     project = report.project
     pattern = report.architecture["pattern"]
-    core = [component for component in report.components if component.stability in {"core", "stable"}]
-    optional = [component for component in report.components if component.stability in {"evolving", "experimental"}]
+
+    declared = detect_declared_mssp(report)
+    declared_sets = [name for name in MSSP_SETS if declared[name]]
+    # Two or more declared sets is a structure; one could be coincidence — a
+    # repository with an unrelated directory called "DMS", for instance.
+    use_declared = len(declared_sets) >= 2
+
+    if use_declared:
+        core = declared["SMS"]
+        optional = declared["TMS"]
+        detection = "declared"
+    else:
+        core = [component for component in report.components if component.stability in {"core", "stable"}]
+        optional = [component for component in report.components if component.stability in {"evolving", "experimental"}]
+        detection = "inferred"
 
     def quote(value: object) -> str:
         return json.dumps(value, ensure_ascii=False)
@@ -137,10 +175,40 @@ def render_mssp(report: ArchitectureReport) -> str:
         f"  confidence: {pattern['confidence']}",
         f"  symbols_indexed: {project.get('symbol_count', 0)}",
         f"  findings: {project.get('finding_count', 0)}",
+        "mssp_detection:",
+        f"  source: {quote(detection)}",
+        f"  declared_sets: {quote(declared_sets)}",
+        "  note: " + quote(
+            "Set membership was read from the repository's own directory names."
+            if use_declared
+            else "No MSSP directories were found; membership below is inferred from stability and centrality, not declared by the project."
+        ),
         "architecture:",
         f"  pattern: {quote(pattern['primary'])}",
-        "  SMS:",
     ]
+
+    # The other three sets only appear when the project actually declares them.
+    if use_declared:
+        for name in ("FMS", "SCL", "DMS"):
+            if not declared[name]:
+                continue
+            lines.append(f"  {name}:")
+            for component in declared[name]:
+                lines.extend([
+                    f"    - module: {quote(component.path)}",
+                    f"      role: {quote(component.role)}",
+                    f"      stability: {quote(component.stability)}",
+                    f"      centrality: {component.centrality}",
+                    "      dependencies:",
+                ])
+                if component.internal_dependencies:
+                    lines.extend(f"        - {quote(dep)}" for dep in component.internal_dependencies)
+                else:
+                    lines.append("        []")
+
+    lines.append("  SMS:")
+    if not core:
+        lines.append("    []")
     for component in core:
         lines.extend([
             f"    - module: {quote(component.path)}",

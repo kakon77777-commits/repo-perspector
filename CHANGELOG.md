@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.6.1 — 2026-08-01
+
+### 修正：MSSP 集合改為讀取宣告，而不是推論
+
+`mssp.config.yaml` 先前把 `stability in {core, stable}` 映射為 SMS、
+`{evolving, experimental}` 映射為 TMS。那是穩定度分類，不是 MSSP 讀取——
+一個在目錄名裡明確宣告 `src/TMS/` 的專案，只要該模組中心性高就會被報成 SMS，
+而 FMS、SCL、DMS 三個集合從來不會被輸出。
+
+現在：專案自己宣告的目錄結構優先，推論只在沒有宣告時作為 fallback。
+輸出新增 `mssp_detection` 區塊，明確標示這次用的是 `declared` 還是 `inferred`——
+推論結果不會再穿著宣告的外衣呈現。
+
+需要兩個以上的集合目錄才認定為 MSSP 結構；單一個 `DMS/` 可能只是撞名。
+
+實測：MSSP 範例專案從「TMS 模組被列在 SMS 底下、只輸出 2 個集合」
+變成「五個集合各就各位」。
+
+新增 `tests/test_mssp_detection.py`，4 項測試。
+
 ## 0.6.0 — 2026-07-14
 
 - 新增持久化架構狀態庫：`record_snapshot`、gzip 完整報告快照、內容指紋去重、專案身分鎖定與 retention。
