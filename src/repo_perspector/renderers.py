@@ -127,8 +127,9 @@ def detect_declared_mssp(report: ArchitectureReport) -> dict[str, list]:
     author with a guess, and the guess is wrong in a predictable direction:
     a declared TMS with high centrality gets reported as SMS.
 
-    Declaration wins where it exists. Inference is the fallback, and
-    render_mssp() records which one produced the output.
+    So the declaration is what gets reported. It is not, however, the whole
+    answer: see observed_facts() and role_divergences() below, which keep the
+    measurements alongside it instead of discarding them.
     """
     grouped: dict[str, list] = {name: [] for name in MSSP_SETS}
     for component in report.components:
@@ -163,6 +164,181 @@ def mssp_units(component) -> list[str]:
     return sorted(f"{base}/{stem.rsplit('.', 1)[0]}" for stem in stems)
 
 
+def observed_facts(component) -> dict[str, object]:
+    """What the analysis measured about one component.
+
+    Deliberately not a role. Dynamic MSSP separates the observed layer from the
+    effective one precisely because a measurement is a fact and a role is an
+    interpretation of facts; collapsing them is how "this scores high on
+    centrality" silently becomes "this is SMS".
+    """
+    return {
+        "dependents": len(component.dependents),
+        "depends_on": len(component.internal_dependencies),
+        "centrality": component.centrality,
+        "instability": component.metrics.get("instability", 0.0),
+        "churn": component.history.get("churn", 0),
+    }
+
+
+# Static analysis alone cannot see runtime activation, incident recovery or
+# business criticality — the evidence Dynamic MSSP leans on hardest. Every
+# hypothesis this file emits therefore caps its confidence below "high", and
+# says which evidence class is missing rather than leaving the gap implicit.
+EVIDENCE_AVAILABLE = ("source_code", "dependency_graph", "git")
+EVIDENCE_MISSING = ("runtime_trace", "incident", "human_assertion")
+
+
+def sibling_unit_imports(report: ArchitectureReport, component) -> list[tuple[str, str]]:
+    """Imports between two MSSP units that share one analysed component.
+
+    The dependency graph drops any edge whose source and target land in the same
+    component (graph_builder keeps `target != source`), and a directory one level
+    below a set — `TMS/reporters/` holding text.py and json.py — is a single
+    component holding two units. So the sibling rule, which is stated at unit
+    granularity, is exactly where the graph cannot see.
+
+    The raw import survives on the file record, though: json.py records
+    `TMS.reporters.text`. Turning that back into a path fragment and matching it
+    against the other files in the same component recovers the edge without
+    guessing the project's source root or module-naming convention.
+    """
+    files = [f for f in report.files if f.component == component.path]
+    if len(files) < 2:
+        return []
+    stems = {f.path: f.path.replace("\\", "/").rsplit(".", 1)[0] for f in files}
+    found: list[tuple[str, str]] = []
+    for record in files:
+        for imported in getattr(record, "imports", []) or []:
+            fragment = imported.replace(".", "/")
+            for other in files:
+                if other.path == record.path:
+                    continue
+                if stems[other.path].endswith(fragment):
+                    pair = (record.path, other.path)
+                    if pair not in found:
+                        found.append(pair)
+    return found
+
+
+def governance_events(report: ArchitectureReport, declared: dict[str, list]) -> list[dict]:
+    """Where the declared structure and the measured structure disagree.
+
+    Nothing here reclassifies anything: the declared sets are still reported as
+    declared, and these events sit beside them. Severity tracks what the evidence
+    can actually carry, which is the whole point of separating them —
+
+      ERROR       a declared MSSP dependency rule, broken by an import that is
+                  right there in the graph. Deterministic; no confidence field,
+                  because there is nothing to be uncertain about.
+      ADVISORY    a hypothesis about role, built from counts. Real evidence,
+                  but counts are not runtime.
+      OBSERVATION a signal that is ambiguous on its own.
+
+    A single snapshot cannot show that a divergence has persisted, so no role
+    hypothesis is raised above ADVISORY however lopsided the numbers look.
+    """
+    events: list[dict] = []
+    core, optional = declared["SMS"], declared["TMS"]
+    optional_paths = {component.path for component in optional}
+
+    # --- deterministic: declared dependency rules, checked against the graph ---
+    # Same two rules FPL refuses to compile. FPL prevents them before the files
+    # exist; this finds them in a repository that already does it.
+    for component in core:
+        for dependency in sorted(set(component.internal_dependencies) & optional_paths):
+            events.append({
+                "type": "DEPENDENCY_RULE_VIOLATION",
+                "rule": "dependency.sms_to_tms",
+                "severity": "ERROR",
+                "subject": component.path,
+                "declared": "SMS",
+                "claim": f"a declared core module imports declared-optional `{dependency}`, so that module is not optional — removing it breaks the core",
+                "evidence": [f"{component.path} -> {dependency} in the dependency graph"],
+                "counterevidence": [],
+                "action": "REVIEW_REQUIRED",
+            })
+
+    for component in optional:
+        siblings = sorted((set(component.internal_dependencies) & optional_paths) - {component.path})
+        for dependency in siblings:
+            events.append({
+                "type": "DEPENDENCY_RULE_VIOLATION",
+                "rule": "dependency.tms_to_tms",
+                "severity": "ERROR",
+                "subject": component.path,
+                "declared": "TMS",
+                "claim": f"one declared-optional module imports another (`{dependency}`); neither can now be removed on its own",
+                "evidence": [f"{component.path} -> {dependency} in the dependency graph"],
+                "counterevidence": [],
+                "action": "REVIEW_REQUIRED",
+            })
+        # Same rule, one granularity finer: two units inside this component.
+        for source, target in sibling_unit_imports(report, component):
+            events.append({
+                "type": "DEPENDENCY_RULE_VIOLATION",
+                "rule": "dependency.tms_to_tms",
+                "severity": "ERROR",
+                "subject": component.path,
+                "declared": "TMS",
+                "claim": f"`{source}` imports `{target}`; both are units of the same declared-optional component, so neither can be removed on its own",
+                "evidence": [
+                    f"{source} imports {target}",
+                    "both units belong to component " + component.path,
+                    "invisible in the component dependency graph, which drops edges inside a component",
+                ],
+                "counterevidence": [],
+                "action": "REVIEW_REQUIRED",
+            })
+
+    # --- quantitative: role divergence, as a hypothesis ---
+    # The bar is the repository's own: how depended-upon is its most
+    # depended-upon declared-core module? A declared-optional module that clears
+    # that bar is being depended on the way this project depends on its core.
+    core_bar = max((len(c.dependents) for c in core), default=0)
+    for component in optional:
+        count = len(component.dependents)
+        if count == 0 or count < core_bar:
+            continue
+        events.append({
+            "type": "ROLE_DIVERGENCE",
+            "severity": "ADVISORY",
+            "subject": component.path,
+            "declared": "TMS",
+            "claim": "declared optional, but depended on at least as widely as this project's most depended-upon declared core module",
+            "evidence": [
+                f"dependents={count} (highest among declared core in this repository is {core_bar})",
+                f"centrality={component.centrality}",
+                *(f"depended on by {path}" for path in sorted(component.dependents)[:6]),
+            ],
+            "counterevidence": [
+                "a dependents count says nothing about runtime activation, nor whether the system degrades gracefully without this module",
+            ],
+            "confidence": "medium",
+            "action": "ROLE_REVIEW_REQUIRED",
+        })
+
+    # --- ambiguous: declared core that nothing reaches for ---
+    for component in core:
+        if component.dependents:
+            continue
+        events.append({
+            "type": "DECLARED_ENTITY_UNUSED",
+            "severity": "OBSERVATION",
+            "subject": component.path,
+            "declared": "SMS",
+            "claim": "declared core, but nothing inside this repository depends on it",
+            "evidence": ["dependents=0", f"depends_on={len(component.internal_dependencies)}"],
+            "counterevidence": [
+                "an entry point, a public API surface, or a module consumed only from outside the repository legitimately has no internal dependents",
+            ],
+            "confidence": "low",
+            "action": "REVIEW_REQUIRED",
+        })
+
+    return events
+
+
 def render_mssp(report: ArchitectureReport) -> str:
     project = report.project
     pattern = report.architecture["pattern"]
@@ -172,6 +348,7 @@ def render_mssp(report: ArchitectureReport) -> str:
     # Two or more declared sets is a structure; one could be coincidence — a
     # repository with an unrelated directory called "DMS", for instance.
     use_declared = len(declared_sets) >= 2
+    divergences = governance_events(report, declared) if use_declared else []
 
     if use_declared:
         core = declared["SMS"]
@@ -184,6 +361,11 @@ def render_mssp(report: ArchitectureReport) -> str:
 
     def quote(value: object) -> str:
         return json.dumps(value, ensure_ascii=False)
+
+    def observed_lines(component, indent: str) -> list[str]:
+        """The measured facts, printed next to the declared role rather than instead of it."""
+        facts = observed_facts(component)
+        return [f"{indent}observed:", *(f"{indent}  {key}: {quote(value)}" for key, value in facts.items())]
 
     lines = [
         "# Generated by repo-perspector v0.6",
@@ -206,9 +388,51 @@ def render_mssp(report: ArchitectureReport) -> str:
             if use_declared
             else "No MSSP directories were found; membership below is inferred from stability and centrality, not declared by the project."
         ),
+        "  evidence_available: " + quote(list(EVIDENCE_AVAILABLE)),
+        "  evidence_missing: " + quote(list(EVIDENCE_MISSING)),
+        "  authority_model: " + quote(
+            "not modelled — this tool reads structure, not who may change it. Absent, not checked and clean."
+        ),
+    ]
+
+    # Divergences between what the project declares and what the analysis
+    # measured. The declared sets below are left exactly as declared; this block
+    # is the disagreement, not a correction of it.
+    lines.append("governance_events:")
+    if not divergences:
+        lines.append("  []" if use_declared else "  []  # no declared structure to compare against")
+    for event in divergences:
+        lines.append(f"  - type: {quote(event['type'])}")
+        if event.get("rule"):
+            lines.append(f"    rule: {quote(event['rule'])}")
+        lines.extend([
+            f"    severity: {quote(event['severity'])}",
+            f"    subject: {quote(event['subject'])}",
+            f"    declared_role: {quote(event['declared'])}",
+            f"    claim: {quote(event['claim'])}",
+            "    evidence:",
+            *(f"      - {quote(item)}" for item in event["evidence"]),
+        ])
+        if event["counterevidence"]:
+            lines.append("    counterevidence:")
+            lines.extend(f"      - {quote(item)}" for item in event["counterevidence"])
+        # An ERROR is read off the dependency graph, so it carries no confidence
+        # field: there is nothing here to be uncertain about, and printing
+        # "confidence: high" next to a fact would make the word meaningless
+        # where it does real work, two events further down.
+        if "confidence" in event:
+            lines.append(f"    confidence: {quote(event['confidence'])}")
+        lines.append(f"    action: {quote(event['action'])}")
+        lines.append("    note: " + quote(
+            "Deterministic: read directly from the dependency graph."
+            if event["severity"] == "ERROR"
+            else "A hypothesis, not a reclassification. The declared role stands until an authority moves it."
+        ))
+
+    lines.extend([
         "architecture:",
         f"  pattern: {quote(pattern['primary'])}",
-    ]
+    ])
 
     # The other three sets only appear when the project actually declares them.
     if use_declared:
@@ -227,6 +451,7 @@ def render_mssp(report: ArchitectureReport) -> str:
                 if units:
                     lines.append("      units:")
                     lines.extend(f"        - {quote(unit)}" for unit in units)
+                lines.extend(observed_lines(component, "      "))
                 lines.extend([
                     "      dependencies:",
                 ])
@@ -253,6 +478,7 @@ def render_mssp(report: ArchitectureReport) -> str:
         if units:
             lines.append("      units:")
             lines.extend(f"        - {quote(unit)}" for unit in units)
+        lines.extend(observed_lines(component, "      "))
         lines.append("      dependencies:")
         lines.extend(f"        - {quote(dep)}" for dep in component.internal_dependencies) if component.internal_dependencies else lines.append("        []")
     lines.append("  TMS:")
@@ -268,6 +494,7 @@ def render_mssp(report: ArchitectureReport) -> str:
         if units:
             lines.append("      units:")
             lines.extend(f"        - {quote(unit)}" for unit in units)
+        lines.extend(observed_lines(component, "      "))
         lines.append("      dependencies:")
         lines.extend(f"        - {quote(dep)}" for dep in component.internal_dependencies) if component.internal_dependencies else lines.append("        []")
     if not optional:
